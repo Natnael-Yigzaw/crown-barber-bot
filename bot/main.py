@@ -1,6 +1,8 @@
 import asyncio
 import logging
 import sys
+from threading import Thread
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
 from aiogram import Bot, Dispatcher
 from aiogram.enums import ParseMode
@@ -24,6 +26,28 @@ logging.basicConfig(
     stream=sys.stdout
 )
 logger = logging.getLogger(__name__)
+
+
+class HealthHandler(BaseHTTPRequestHandler):
+    """Simple health check handler for Render port detection"""
+    
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-type', 'text/plain')
+        self.end_headers()
+        self.wfile.write(b'OK')
+    
+    def log_message(self, format, *args):
+        pass  # Suppress HTTP logs
+
+
+def run_health_server():
+    """Run a minimal HTTP server on port 10000 for Render"""
+    port = 10000
+    server = HTTPServer(('0.0.0.0', port), HealthHandler)
+    logger.info(f"Health server running on port {port}")
+    server.serve_forever()
+
 
 async def main():
     if not await check_connection():
@@ -87,6 +111,11 @@ async def main():
     
     scheduler.start()
     logger.info("Scheduler started")
+    
+    # Start health check server in a separate thread
+    health_thread = Thread(target=run_health_server, daemon=True)
+    health_thread.start()
+    
     logger.info("Bot is running...")
     
     try:
