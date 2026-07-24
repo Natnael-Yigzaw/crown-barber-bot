@@ -4,7 +4,7 @@ import sys
 
 from aiogram import Bot, Dispatcher
 from aiogram.enums import ParseMode
-from aiogram.client.default import DefaultBotProperties
+from aiogram.client.bot import DefaultBotProperties
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import BotCommand, BotCommandScopeChat
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -87,8 +87,7 @@ async def main():
     
     scheduler.start()
     logger.info("Scheduler started")
-    
-    logger.info("Bot is running... Press Ctrl+C to stop")
+    logger.info("Bot is running...")
     
     try:
         await dp.start_polling(bot)
