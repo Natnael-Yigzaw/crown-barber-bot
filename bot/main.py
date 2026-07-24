@@ -6,12 +6,13 @@ from aiogram import Bot, Dispatcher
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import BotCommand
+from aiogram.types import BotCommand, BotCommandScopeChat
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from bot.config import settings
 from bot.services.database import check_connection, engine
-from bot.services.notification import check_and_send_reminders, send_daily_summary
+from bot.services.notification import check_and_send_reminders, send_daily_summary, expire_pending_bookings
+from bot.services.settings import refresh_cache
 from bot.handlers.start import router as start_router
 from bot.handlers.booking import router as booking_router
 from bot.handlers.payment import router as payment_router
@@ -31,16 +32,28 @@ async def main():
     
     logger.info("Database connected")
     
+    await refresh_cache()
+    logger.info("Settings cache loaded")
+    
     bot = Bot(
         token=settings.BOT_TOKEN,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML)
     )
     
     dp = Dispatcher(storage=MemoryStorage())
+    
     await bot.set_my_commands([
         BotCommand(command="start", description="Open the main menu"),
-        BotCommand(command="help", description="How to use the bot")
     ])
+    
+    await bot.set_my_commands(
+        [
+            BotCommand(command="start", description="Open the main menu"),
+            BotCommand(command="admin", description="Admin panel"),
+        ],
+        scope=BotCommandScopeChat(chat_id=settings.ADMIN_USER_ID)
+    )
+    
     dp.include_router(start_router)
     dp.include_router(booking_router)
     dp.include_router(payment_router)
@@ -56,6 +69,13 @@ async def main():
         id='reminders'
     )
     
+    scheduler.add_job(
+        expire_pending_bookings,
+        'interval',
+        minutes=10,
+        id='expire_pending_bookings'
+    )
+
     scheduler.add_job(
         send_daily_summary,
         'cron',
@@ -74,10 +94,7 @@ async def main():
         await dp.start_polling(bot)
     finally:
         scheduler.shutdown()
-        logger.info("Scheduler stopped")
-        logger.info("Closing bot session...")
         await bot.session.close()
-        logger.info("Disposing database engine...")
         await engine.dispose()
         logger.info("Bot stopped cleanly")
 

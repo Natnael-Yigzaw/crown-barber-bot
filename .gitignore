@@ -1,6 +1,7 @@
 # Environment
 .env
 venv/
+tests/
 __pycache__/
 *.pyc
 *.pyo
