@@ -1,0 +1,42 @@
+services:
+  - type: worker
+    name: crown-barber-bot
+    env: python
+    region: frankfurt
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m bot.main
+    envVars:
+      - key: DB_HOST
+        sync: false
+      - key: DB_PORT
+        sync: false
+      - key: DB_NAME
+        sync: false
+      - key: DB_USER
+        sync: false
+      - key: DB_PASSWORD
+        sync: false
+      - key: BOT_TOKEN
+        sync: false
+      - key: ADMIN_USER_ID
+        sync: false
+      - key: SHOP_NAME
+        sync: false
+      - key: SHOP_ADDRESS
+        sync: false
+      - key: SHOP_PHONE
+        sync: false
+      - key: DEPOSIT_AMOUNT
+        sync: false
+      - key: CBE_ACCOUNT
+        sync: false
+      - key: TELEBIRR_NUMBER
+        sync: false
+      - key: OPENING_TIME
+        sync: false
+      - key: CLOSING_TIME
+        sync: false
+      - key: CLOSED_DAYS
+        sync: false
+      - key: PAYMENTS_CHANNEL_ID
+        sync: false
