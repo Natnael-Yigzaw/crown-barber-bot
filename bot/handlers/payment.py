@@ -13,6 +13,7 @@ from bot.services.settings import get_int_setting, get_setting
 from bot.models.user import User
 from bot.models.booking import Booking
 from bot.models.payment import Payment
+from bot.utils.messages import booking_time_label, payment_instructions
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -29,36 +30,38 @@ async def request_screenshot(callback: CallbackQuery, state: FSMContext):
         result = await session.execute(select(User).where(User.user_id == user_id))
         user = result.scalar_one_or_none()
 
+        booking_result = await session.execute(
+            select(Booking).where(
+                Booking.booking_id == booking_id,
+                Booking.user_id == user_id,
+                Booking.status.in_(['pending_payment', 'pending_verification'])
+            )
+        )
+        booking = booking_result.scalar_one_or_none()
+
     lang = user.language if user else 'en'
+    if not booking:
+        await callback.answer("Booking not found", show_alert=True)
+        return
+
     await state.update_data(booking_id=booking_id, language=lang)
 
     deposit = await get_int_setting("DEPOSIT_AMOUNT", settings.DEPOSIT_AMOUNT)
     cbe = await get_setting("CBE_ACCOUNT", settings.CBE_ACCOUNT)
     telebirr = await get_setting("TELEBIRR_NUMBER", settings.TELEBIRR_NUMBER)
 
-    if lang == 'am':
-        text = (
-            f"💳 ቅድመ ክፍያ: {deposit} Birr\n\n"
-            f"🏦 CBE: {cbe}\n"
-            f"📱 Telebirr: {telebirr}\n\n"
-            f"📸 ከከፈሉ በኋላ ስክሪንሾት ያስገቡ (ከ5MB በታች)"
-        )
-    else:
-        text = (
-            f"💳 Deposit: {deposit} Birr\n\n"
-            f"🏦 CBE: {cbe}\n"
-            f"📱 Telebirr: {telebirr}\n\n"
-            f"📸 Upload screenshot after payment (under 5MB)"
-        )
+    text = payment_instructions(booking, deposit, cbe, telebirr, lang)
 
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(
-            text="Back" if lang == 'en' else "ተመለስ",
-            callback_data="back_to_main"
-        )]
-    ])
-
-    await callback.message.edit_text(text, reply_markup=keyboard)
+    await callback.message.edit_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(
+                text="🔙 Back" if lang == 'en' else "🔙 ተመለስ",
+                callback_data="back_to_main"
+            )]
+        ]),
+        parse_mode="HTML"
+    )
     await state.set_state(PaymentStates.waiting_for_screenshot)
     await callback.answer()
 
@@ -84,6 +87,24 @@ async def receive_screenshot(message: Message, state: FSMContext):
     deposit = await get_int_setting("DEPOSIT_AMOUNT", settings.DEPOSIT_AMOUNT)
 
     try:
+        async with async_session() as session:
+            result = await session.execute(
+                select(Booking).where(
+                    Booking.booking_id == booking_id,
+                    Booking.user_id == user_id,
+                    Booking.status.in_(['pending_payment', 'pending_verification'])
+                )
+            )
+            booking = result.scalar_one_or_none()
+
+        if not booking:
+            await state.clear()
+            if lang == 'am':
+                await message.answer("ቀጠሮው አልተገኘም።")
+            else:
+                await message.answer("Booking not found.")
+            return
+
         screenshot_link = await save_screenshot_to_channel(
             bot=message.bot,
             file_id=file_id,
@@ -102,7 +123,10 @@ async def receive_screenshot(message: Message, state: FSMContext):
             session.add(payment)
 
             result = await session.execute(
-                select(Booking).where(Booking.booking_id == booking_id)
+                select(Booking).where(
+                    Booking.booking_id == booking_id,
+                    Booking.user_id == user_id,
+                )
             )
             booking = result.scalar_one_or_none()
             if booking:
@@ -120,9 +144,10 @@ async def receive_screenshot(message: Message, state: FSMContext):
         await message.bot.send_message(
             chat_id=settings.ADMIN_USER_ID,
             text=(
-                f"New Payment Uploaded\n\n"
+                f"Payment uploaded\n\n"
                 f"Booking: #{booking_id}\n"
                 f"Customer: {user_name}\n"
+                f"Appointment: {booking.booking_date} at {booking_time_label(booking.booking_time)}\n"
                 f"Amount: {deposit} Birr\n\n"
                 f"View: {screenshot_link}\n\n"
                 f"Use /admin to verify"

@@ -16,6 +16,7 @@ from bot.models.user import User
 from bot.models.booking import Booking
 from bot.models.payment import Payment
 from bot.models.service import Service
+from bot.utils.messages import admin_booking_line, admin_payment_review
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -46,50 +47,34 @@ async def show_pending_payments(callback: CallbackQuery):
 
     async with async_session() as session:
         result = await session.execute(
-            select(Payment, Booking, User)
+            select(Payment, Booking, User, Service)
             .join(Booking, Payment.booking_id == Booking.booking_id)
             .join(User, Payment.user_id == User.user_id)
+            .join(Service, Booking.service_id == Service.service_id, isouter=True)
             .where(Payment.status == 'pending')
             .order_by(Payment.created_at.desc())
         )
         pending = result.all()
 
     if not pending:
-        await callback.message.answer("No pending payments.", reply_markup=admin_back_keyboard())
+        await callback.message.answer("No payments need review.", reply_markup=admin_back_keyboard())
         await callback.answer()
         return
 
     count = 0
-    for payment, booking, user in pending:
-        service_name = "N/A"
-        if booking.service_id:
-            service_result = await session.execute(
-                select(Service).where(Service.service_id == booking.service_id)
-            )
-            service = service_result.scalar_one_or_none()
-            if service:
-                service_name = service.name_en
-
-        text = (
-            f"ID: {booking.booking_id}\n"
-            f"Customer: {user.full_name}\n"
-            f"Phone: {user.phone_number}\n"
-            f"Service: {service_name}\n"
-            f"Date: {booking.booking_date}\n"
-            f"Time: {booking.booking_time}\n"
-            f"Amount: {payment.amount} Birr\n"
-        )
+    for payment, booking, user, service in pending:
+        text = admin_payment_review(payment, booking, user, service)
 
         buttons = [
             [
-                InlineKeyboardButton(text="Approve", callback_data=f"approve_{payment.payment_id}"),
-                InlineKeyboardButton(text="Decline", callback_data=f"decline_{payment.payment_id}")
+                InlineKeyboardButton(text="Approve payment", callback_data=f"approve_{payment.payment_id}"),
+                InlineKeyboardButton(text="Decline payment", callback_data=f"decline_{payment.payment_id}")
             ],
-            [InlineKeyboardButton(text="Chat", callback_data=f"chat_{booking.booking_id}")]
+            [InlineKeyboardButton(text="Message customer", callback_data=f"chat_{booking.booking_id}")]
         ]
 
         if payment.screenshot_path and payment.screenshot_path.startswith("http"):
-            buttons.insert(0, [InlineKeyboardButton(text="View Screenshot", url=payment.screenshot_path)])
+            buttons.insert(0, [InlineKeyboardButton(text="View screenshot", url=payment.screenshot_path)])
 
         keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -104,7 +89,7 @@ async def show_pending_payments(callback: CallbackQuery):
 
         count += 1
 
-    await callback.answer(f"Found {count} pending")
+    await callback.answer(f"{count} payment(s) need review")
 
 
 @router.callback_query(F.data.startswith("approve_"))
@@ -135,13 +120,13 @@ async def approve_payment(callback: CallbackQuery):
             try:
                 await callback.bot.send_message(
                     chat_id=payment.user_id,
-                    text="✅ Payment Verified! Your booking is now confirmed. See you soon!"
+                    text="Payment verified\n\nYour appointment is confirmed. See you soon!"
                 )
             except Exception:
                 pass
 
-    await callback.answer("Approved!")
-    await callback.message.reply(f"Payment #{payment_id} approved.")
+    await callback.answer("Payment approved")
+    await callback.message.reply(f"Payment #{payment_id} approved. Booking is now confirmed.")
 
 
 @router.callback_query(F.data.startswith("decline_"))
@@ -198,15 +183,15 @@ async def decline_payment_finish(callback: CallbackQuery, state: FSMContext):
                 ])
                 await callback.bot.send_message(
                     chat_id=payment.user_id,
-                    text=f"❌ Payment Declined\n\nReason: {reason}\n\nPlease upload a new screenshot.",
+                    text=f"Payment needs another screenshot\n\nReason: {reason}\n\nPlease upload a new payment screenshot.",
                     reply_markup=keyboard
                 )
             except Exception:
                 pass
 
     await state.clear()
-    await callback.answer("Declined")
-    await callback.message.reply(f"Payment #{payment_id} declined: {reason}")
+    await callback.answer("Payment declined")
+    await callback.message.reply(f"Payment #{payment_id} declined. Reason: {reason}")
 
 
 @router.callback_query(F.data.startswith("chat_"))
@@ -269,8 +254,9 @@ async def show_today_bookings(callback: CallbackQuery):
 
     async with async_session() as session:
         result = await session.execute(
-            select(Booking, User)
+            select(Booking, User, Service)
             .join(User, Booking.user_id == User.user_id)
+            .join(Service, Booking.service_id == Service.service_id, isouter=True)
             .where(Booking.booking_date == today)
             .order_by(Booking.booking_time)
         )
@@ -279,9 +265,9 @@ async def show_today_bookings(callback: CallbackQuery):
     if not bookings:
         text = "No bookings for today."
     else:
-        text = f"=== Today ({today}) ===\n\n"
-        for booking, user in bookings:
-            text += f"{booking.booking_time} - {user.full_name} ({booking.status})\n"
+        text = f"Today ({today})\n\n"
+        for booking, user, service in bookings:
+            text += f"{admin_booking_line(booking, user, service)}\n"
 
     await callback.message.edit_text(text, reply_markup=admin_back_keyboard())
     await callback.answer()
@@ -334,12 +320,9 @@ async def show_all_bookings(callback: CallbackQuery):
     if not bookings:
         text = "No bookings found."
     else:
-        text = "=== All Bookings ===\n\n"
+        text = "Recent bookings\n\n"
         for booking, user, service in bookings:
-            text += (
-                f"#{booking.booking_id} | {booking.booking_date} | {booking.booking_time}\n"
-                f"{user.full_name} | {service.name_en} | {booking.status}\n---\n"
-            )
+            text += f"{booking.booking_date} | {admin_booking_line(booking, user, service)}\n"
 
     await callback.message.edit_text(text, reply_markup=admin_back_keyboard())
     await callback.answer()
@@ -360,7 +343,7 @@ async def show_customers(callback: CallbackQuery):
     if not users:
         text = "No customers yet."
     else:
-        text = f"=== Customers ({len(users)}) ===\n\n"
+        text = f"Customers ({len(users)})\n\n"
         for user in users:
             text += f"👤 {user.full_name}\n📞 {user.phone_number}\n🌐 {user.language}\n---\n"
 
@@ -378,7 +361,7 @@ async def show_services_admin(callback: CallbackQuery):
         result = await session.execute(select(Service).order_by(Service.service_id))
         services = result.scalars().all()
 
-    text = "=== Services ===\n\n"
+    text = "Services\n\n"
     for s in services:
         status = "Active" if s.is_active else "Inactive"
         text += f"#{s.service_id} {s.name_en} - {s.price} Birr ({status})\n"
@@ -515,6 +498,10 @@ async def start_edit_service(callback: CallbackQuery):
 
 @router.callback_query(F.data.startswith("edit_service_"))
 async def edit_service(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Unauthorized", show_alert=True)
+        return
+
     parts = callback.data.split("_", 2)
     service_id = int(parts[-1])
 
@@ -566,6 +553,10 @@ async def delete_service(callback: CallbackQuery):
 
 @router.callback_query(F.data.startswith("delete_service_"))
 async def remove_service(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Unauthorized", show_alert=True)
+        return
+
     service_id = int(callback.data.split("_")[-1])
     async with async_session() as session:
         service = await session.get(Service, service_id)
@@ -585,7 +576,7 @@ async def show_schedule(callback: CallbackQuery):
 
     schedules = await get_all_schedules()
 
-    text = "=== Working Hours ===\n\n"
+    text = "Working hours\n\n"
     for s in schedules:
         text += f"<b>{DAY_NAMES_EN[s.day_of_week]}:</b> "
         if s.is_working_day:
@@ -638,8 +629,10 @@ async def edit_day_options(callback: CallbackQuery, state: FSMContext):
         await callback.answer("Schedule not found")
         return
 
-    western_open = format_time(schedule.opening_time)
-    western_close = format_time(schedule.closing_time)
+    from bot.utils.time_format import to_12h
+
+    western_open = to_12h(schedule.opening_time)
+    western_close = to_12h(schedule.closing_time)
     eth_open = to_ethiopian_time_str(schedule.opening_time)
     eth_close = to_ethiopian_time_str(schedule.closing_time)
 
@@ -649,22 +642,23 @@ async def edit_day_options(callback: CallbackQuery, state: FSMContext):
         f"Opens: {western_open} (Eth: {eth_open})\n"
         f"Closes: {western_close} (Eth: {eth_close})\n"
     )
-    
+
     if schedule.lunch_start and schedule.lunch_end:
-        w_lunch_s = format_time(schedule.lunch_start)
-        w_lunch_e = format_time(schedule.lunch_end)
+        w_lunch_s = to_12h(schedule.lunch_start)
+        w_lunch_e = to_12h(schedule.lunch_end)
         e_lunch_s = to_ethiopian_time_str(schedule.lunch_start)
         e_lunch_e = to_ethiopian_time_str(schedule.lunch_end)
         text += f"Lunch: {w_lunch_s}-{w_lunch_e} (Eth: {e_lunch_s}-{e_lunch_e})\n"
     else:
         text += "Lunch: None\n"
-    
+
     text += (
         f"Slot: {schedule.slot_duration} min\n\n"
         f"<b>Send new values:</b>\n"
         f"<code>open,close,lunch_start,lunch_end,slot,is_open</code>\n\n"
-        f"Example: <code>02:00,13:00,06:00,06:30,60,true</code>\n"
-        f"Or send <code>closed</code> to mark as non-working day\n"
+        f"24h: <code>02:00,13:00,06:00,06:30,60,true</code>\n"
+        f"12h: <code>2:00 AM,1:00 PM,6:00 AM,6:30 AM,60,true</code>\n\n"
+        f"Or send <code>closed</code> for non-working day\n"
         f"Send /skip to cancel"
     )
 
@@ -693,30 +687,42 @@ async def save_day_schedule(message: Message, state: FSMContext):
         await message.answer(f"✅ {DAY_NAMES_EN[day]} marked as closed.")
         return
 
+    def parse_time_input(time_str: str) -> dt_time:
+        """Parse time in 24h (02:00) or 12h (2:00 AM) format"""
+        time_str = time_str.strip()
+        try:
+            return dt_time.fromisoformat(time_str)
+        except ValueError:
+            return datetime.strptime(time_str, "%I:%M %p").time()
+
     try:
         parts = message.text.split(',')
-        opening = dt_time.fromisoformat(parts[0].strip())
-        closing = dt_time.fromisoformat(parts[1].strip())
-        lunch_start = dt_time.fromisoformat(parts[2].strip()) if len(parts) > 2 and parts[2].strip() else None
-        lunch_end = dt_time.fromisoformat(parts[3].strip()) if len(parts) > 3 and parts[3].strip() else None
+        opening = parse_time_input(parts[0])
+        closing = parse_time_input(parts[1])
         slot_dur = int(parts[4].strip()) if len(parts) > 4 and parts[4].strip() else 60
         is_open = parts[5].strip().lower() == 'true' if len(parts) > 5 else True
-
-        await update_day_schedule(
-            day_of_week=day,
-            is_working_day=is_open,
-            opening_time=opening,
-            closing_time=closing,
-            lunch_start=lunch_start,
-            lunch_end=lunch_end,
-            slot_duration=slot_dur,
-        )
+        schedule_updates = {
+            "day_of_week": day,
+            "is_working_day": is_open,
+            "opening_time": opening,
+            "closing_time": closing,
+            "slot_duration": slot_dur,
+        }
+        if len(parts) > 2:
+            schedule_updates["lunch_start"] = parse_time_input(parts[2]) if parts[2].strip() else None
+        if len(parts) > 3:
+            schedule_updates["lunch_end"] = parse_time_input(parts[3]) if parts[3].strip() else None
+        await update_day_schedule(**schedule_updates)
 
         await state.clear()
         await message.answer(f"✅ {DAY_NAMES_EN[day]} updated successfully!")
     except Exception as e:
-        await message.answer(f"❌ Error: {e}\n\nFormat: open,close,lunch_start,lunch_end,slot,is_open\nExample: 02:00,13:00,06:00,06:30,60,true")
-
+        await message.answer(
+            f"❌ Error: {e}\n\n"
+            f"Format: open,close,lunch_start,lunch_end,slot,is_open\n\n"
+            f"24h example: 02:00,13:00,06:00,06:30,60,true\n"
+            f"12h example: 2:00 AM,1:00 PM,6:00 AM,6:30 AM,60,true"
+        )
 
 @router.callback_query(F.data == "admin_settings")
 async def show_settings(callback: CallbackQuery):
@@ -725,7 +731,7 @@ async def show_settings(callback: CallbackQuery):
         return
 
     settings_map = await get_all_settings()
-    text = "=== Settings ===\n\n"
+    text = "Settings\n\n"
     for key, value in settings_map.items():
         text += f"{key}: {value}\n"
 
@@ -762,6 +768,10 @@ async def edit_setting_list(callback: CallbackQuery):
 
 @router.callback_query(F.data.startswith("edit_setting_"))
 async def start_edit_setting(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Unauthorized", show_alert=True)
+        return
+
     key = callback.data.replace("edit_setting_", "", 1)
     current = await get_setting(key, "")
     await state.update_data(edit_setting_key=key)
@@ -772,6 +782,9 @@ async def start_edit_setting(callback: CallbackQuery, state: FSMContext):
 
 @router.message(AdminStates.waiting_for_setting_value, F.text)
 async def receive_setting_value(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+
     data = await state.get_data()
     key = data['edit_setting_key']
     value = message.text.strip()

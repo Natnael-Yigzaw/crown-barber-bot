@@ -15,7 +15,13 @@ from bot.services.working_hours import get_day_schedule
 from bot.models.user import User
 from bot.models.service import Service
 from bot.models.booking import Booking
-from bot.utils.ethiopian_time import format_date_am, format_ethiopian_date, to_ethiopian_time
+from bot.utils.ethiopian_time import format_date_am, format_ethiopian_date
+from bot.utils.time_format import to_12h_str, to_ethiopian_display
+from bot.utils.messages import (
+    customer_booking_confirmed,
+    customer_booking_details,
+    customer_booking_summary,
+)
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -32,9 +38,9 @@ def generate_time_slots(
     closing_time: str | None = None,
     interval_minutes: int | None = None,
 ) -> list[str]:
-    start = datetime.strptime(opening_time or "09:00", "%H:%M")
-    end = datetime.strptime(closing_time or "18:00", "%H:%M")
-    step = interval_minutes or 30
+    start = datetime.strptime(opening_time or "02:00", "%H:%M")
+    end = datetime.strptime(closing_time or "13:00", "%H:%M")
+    step = interval_minutes or 60
 
     slots = []
     current = start
@@ -51,8 +57,8 @@ def build_available_slots(
     opening_time: str | None = None,
     closing_time: str | None = None,
 ) -> list[str]:
-    opening = parse_time(opening_time or "09:00")
-    closing = parse_time(closing_time or "18:00")
+    opening = parse_time(opening_time or "02:00")
+    closing = parse_time(closing_time or "13:00")
     available = []
 
     for slot in slots:
@@ -75,17 +81,23 @@ def build_available_slots(
     return available
 
 
-async def get_booked_intervals(booking_date_str: str) -> list[tuple[datetime.time, int]]:
+async def get_booked_intervals(booking_date_str: str, exclude_booking_id: int | None = None,
+) -> list[tuple[datetime.time, int]]:
     booking_date_val = date.fromisoformat(booking_date_str)
 
     async with async_session() as session:
+        query = select(Booking.booking_time, Service.duration).join(
+            Service, Booking.service_id == Service.service_id
+        ).where(
+            Booking.booking_date == booking_date_val,
+            Booking.status.in_(['pending_payment', 'pending_verification', 'confirmed'])
+        )
+
+        if exclude_booking_id is not None:
+            query = query.where(Booking.booking_id != exclude_booking_id)
+
         result = await session.execute(
-            select(Booking.booking_time, Service.duration).join(
-                Service, Booking.service_id == Service.service_id
-            ).where(
-                Booking.booking_date == booking_date_val,
-                Booking.status.in_(['pending_payment', 'pending_verification', 'confirmed'])
-            )
+            query
         )
         booked = result.all()
         return [(booking_time, int(duration)) for booking_time, duration in booked]
@@ -114,9 +126,9 @@ async def show_services(callback: CallbackQuery, state: FSMContext):
         services = result.scalars().all()
 
     if lang == LANG_AMHARIC:
-        text = "✂️ አገልግሎቱን ይምረጡ — የእርስዎ እርካታ በእኛ ተመርጧል።"
+        text = "ደረጃ 1/3\nአገልግሎት ይምረጡ"
     else:
-        text = "✂️ Select your service — choose the experience that fits your style."
+        text = "Step 1 of 3\nChoose a service"
 
     await callback.message.edit_text(text, reply_markup=services_keyboard(services, lang))
     await state.set_state(BookingStates.selecting_service)
@@ -169,18 +181,20 @@ async def select_service(callback: CallbackQuery, state: FSMContext):
 
     if lang == LANG_AMHARIC:
         text = (
-            f"✨ አገልግሎት: {service.name_am}\n"
-            f"💸 ዋጋ: {service.price} Birr\n\n"
-            f"ቀጣይ ለመሄድ ቀን ይምረጡ።"
+            f"ደረጃ 2/3\n\n"
+            f"አገልግሎት: {service.name_am}\n"
+            f"ዋጋ: {service.price} Birr\n\n"
+            f"ቀን ይምረጡ።"
         )
     else:
         text = (
-            f"✨ Service: {service.name_en}\n"
-            f"💸 Price: {service.price} Birr\n\n"
-            f"Choose your preferred date to continue."
+            f"Step 2 of 3\n\n"
+            f"Service: {service.name_en}\n"
+            f"Price: {service.price} Birr\n\n"
+            f"Pick a date to continue."
         )
 
-    continue_text = "Pick Date" if lang == 'en' else "ቀን ይምረጡ"
+    continue_text = "Pick date" if lang == 'en' else "ቀን ይምረጡ"
     back_text = "Back" if lang == 'en' else "ተመለስ"
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -224,9 +238,9 @@ async def show_dates(callback: CallbackQuery, state: FSMContext):
     builder.row(InlineKeyboardButton(text=back_text, callback_data="back_to_services"))
 
     if lang == LANG_AMHARIC:
-        text = "📅 ቀጠሮ የሚፈልጉበትን ቀን ይምረጡ"
+        text = "ደረጃ 2/3\nቀን ይምረጡ"
     else:
-        text = "📅 Select your preferred date"
+        text = "Step 2 of 3\nPick a date"
 
     await callback.message.edit_text(text, reply_markup=builder.as_markup())
     await state.set_state(BookingStates.selecting_date)
@@ -294,12 +308,11 @@ async def select_date(callback: CallbackQuery, state: FSMContext):
         row = []
         for t in available_slots:
             if lang == LANG_AMHARIC:
-                eth_time = to_ethiopian_time(t)
-                label = f"{eth_time}"
+                label_12h = to_12h_str(t)
+                eth_time = to_ethiopian_display(t)
+                label = f"{label_12h}  ({eth_time})"
             else:
-                # Show both Western and Ethiopian for English users too
-                eth_time = to_ethiopian_time(t)
-                label = f"{t}  ({eth_time})"
+                label = to_12h_str(t)
             row.append(InlineKeyboardButton(text=label, callback_data=f"time_{t}"))
             if len(row) == 1:
                 builder.row(*row)
@@ -310,9 +323,9 @@ async def select_date(callback: CallbackQuery, state: FSMContext):
         if lang == LANG_AMHARIC:
             date_obj = date.fromisoformat(selected_date)
             date_am = format_date_am(date_obj)
-            text = f"🕐 {date_am}\nየሚመችዎትን ሰዓት ይምረጡ\n(በኢትዮጵያ ሰዓት አቆጣጠር)"
+            text = f"ደረጃ 3/3\n{date_am}\nሰዓት ይምረጡ\n(12 ሰዓት | የኢትዮጵያ ሰዓት)"
         else:
-            text = f"🕒 Date: {selected_date}\nSelect a time\n(Western time | Ethiopian time)"
+            text = f"Step 3 of 3\nDate: {selected_date}\nPick a time"
 
     back_text = "Back" if lang == 'en' else "ተመለስ"
     builder.row(InlineKeyboardButton(text=back_text, callback_data="pick_date"))
@@ -337,37 +350,18 @@ async def select_time(callback: CallbackQuery, state: FSMContext):
     deposit = await get_int_setting("DEPOSIT_AMOUNT", settings.DEPOSIT_AMOUNT)
     remaining = service_price - deposit
 
-    if lang == LANG_AMHARIC:
-        booking_date_obj = date.fromisoformat(booking_date)
-        eth_time = to_ethiopian_time(selected_time)
-        eth_date = format_ethiopian_date(booking_date_obj)
-        
-        text = (
-            f"✨ === የቀጠሮ ማጠቃለያ ===\n\n"
-            f"💈 አገልግሎት: {service_name}\n"
-            f"💸 ዋጋ: {service_price} Birr\n"
-            f"📅 ቀን: {eth_date}\n"
-            f"🕐 ሰዓት: {eth_time}\n\n"
-            f"💳 ቅድመ ክፍያ: {deposit} Birr\n"
-            f"🏪 በቀጠሮ ቀን: {remaining} Birr\n\n"
-            f"ይህን ቀጠሮ አረጋግጡ?"
-        )
-    else:
-        eth_time = to_ethiopian_time(selected_time)
-        text = (
-            f"✨ === Booking Summary ===\n\n"
-            f"Service: {service_name}\n"
-            f"Price: {service_price} Birr\n"
-            f"Date: {booking_date}\n"
-            f"Time: {selected_time}\n"
-            f"Ethiopian Time: {eth_time}\n\n"
-            f"Deposit: {deposit} Birr\n"
-            f"At the shop: {remaining} Birr\n\n"
-            f"Would you like to confirm?"
-        )
+    text = customer_booking_summary(
+        service_name=service_name,
+        service_price=service_price,
+        booking_date=booking_date,
+        booking_time=selected_time,
+        deposit=deposit,
+        remaining=remaining,
+        lang=lang,
+    )
 
-    confirm_text = "Confirm" if lang == 'en' else "አረጋግጥ"
-    change_text = "Change" if lang == 'en' else "ቀይር"
+    confirm_text = "Confirm booking" if lang == 'en' else "ቀጠሮ አረጋግጥ"
+    change_text = "Change time" if lang == 'en' else "ጊዜ ቀይር"
     cancel_text = "Cancel" if lang == 'en' else "ሰርዝ"
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -409,35 +403,17 @@ async def confirm_booking(callback: CallbackQuery, state: FSMContext):
             await session.refresh(booking)
             booking_id = booking.booking_id
 
-        if lang == LANG_AMHARIC:
-            booking_date_obj = date.fromisoformat(data.get('booking_date'))
-            eth_time = to_ethiopian_time(data.get('booking_time'))
-            eth_date = format_ethiopian_date(booking_date_obj)
-            
-            text = (
-                f"✅ === ቀጠሮ ተመዝግቧል! ===\n\n"
-                f"💈 አገልግሎት: {data.get('service_name_am')}\n"
-                f"📅 ቀን: {eth_date}\n"
-                f"🕐 ሰዓት: {eth_time}\n\n"
-                f"💳 ለማረጋገጥ {deposit} Birr ቅድመ ክፍያ ያስፈልጋል\n"
-                f"📸 እባክዎ የክፍያ ስክሪንሾት ያስገቡ\n\n"
-                f"🏦 CBE: {cbe}\n"
-                f"📱 Telebirr: {telebirr}"
-            )
-        else:
-            eth_time = to_ethiopian_time(data.get('booking_time'))
-            text = (
-                f"✅ === Booking Confirmed! ===\n\n"
-                f"Service: {data.get('service_name')}\n"
-                f"Date: {data.get('booking_date')}\n"
-                f"Time: {data.get('booking_time')}\n"
-                f"Ethiopian Time: {eth_time}\n\n"
-                f"Upload {deposit} Birr deposit screenshot\n\n"
-                f"🏦 CBE: {cbe}\n"
-                f"📱 Telebirr: {telebirr}"
-            )
+        text = customer_booking_confirmed(
+            service_name=data.get('service_name_am') if lang == LANG_AMHARIC else data.get('service_name'),
+            booking_date=data.get('booking_date'),
+            booking_time=data.get('booking_time'),
+            deposit=deposit,
+            cbe=cbe,
+            telebirr=telebirr,
+            lang=lang,
+        )
 
-        upload_text = "Upload Screenshot" if lang == 'en' else "ስክሪንሾት አስገባ"
+        upload_text = "Upload payment screenshot" if lang == 'en' else "የክፍያ ስክሪንሾት ላክ"
         back_text = "Main Menu" if lang == 'en' else "ዋና ምናሌ"
 
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -509,9 +485,16 @@ async def view_booking(callback: CallbackQuery):
 
     async with async_session() as session:
         result = await session.execute(
-            select(Booking).where(Booking.booking_id == booking_id)
+            select(Booking).where(
+                Booking.booking_id == booking_id,
+                Booking.user_id == callback.from_user.id,
+            )
         )
         booking = result.scalar_one_or_none()
+
+        if not booking:
+            await callback.answer("Booking not found")
+            return
 
         user_result = await session.execute(
             select(User).where(User.user_id == callback.from_user.id)
@@ -523,49 +506,13 @@ async def view_booking(callback: CallbackQuery):
         )
         service = service_result.scalar_one_or_none()
 
-    if not booking:
-        await callback.answer("Booking not found")
-        return
-
     lang = user.language if user else 'en'
-    service_name = service.name_am if lang == 'am' else service.name_en
-
-    status_map = {
-        'pending_payment': 'Waiting for payment' if lang == 'en' else 'ክፍያ በመጠበቅ ላይ',
-        'pending_verification': 'Verifying payment' if lang == 'en' else 'ክፍያ በመረጋገጥ ላይ',
-        'confirmed': 'Confirmed' if lang == 'en' else 'ተረጋግጧል',
-        'completed': 'Completed' if lang == 'en' else 'ተጠናቋል',
-        'declined': 'Payment issue' if lang == 'en' else 'የክፍያ ችግር',
-        'canceled': 'Canceled' if lang == 'en' else 'ተሰርዟል',
-    }
-    status_text = status_map.get(booking.status, booking.status)
-
-    if lang == 'am':
-        booking_date_obj = booking.booking_date
-        eth_time = to_ethiopian_time(booking.booking_time.strftime("%H:%M"))
-        eth_date = format_ethiopian_date(booking_date_obj)
-        
-        text = (
-            f"✨ === የቀጠሮ ዝርዝር ===\n\n"
-            f"💈 አገልግሎት: {service_name}\n"
-            f"📅 ቀን: {eth_date}\n"
-            f"🕐 ሰዓት: {eth_time}\n"
-            f"📌 ሁኔታ: {status_text}\n"
-            f"💳 ቅድመ ክፍያ: {booking.deposit_amount} Birr\n"
-            f"💰 ቀሪ: {booking.remaining_amount} Birr\n"
-        )
+    if service:
+        service_name = service.name_am if lang == 'am' else service.name_en
     else:
-        booking_time_str = booking.booking_time.strftime("%H:%M")
-        eth_time = to_ethiopian_time(booking_time_str)
-        text = (
-            f"✨ === Booking Details ===\n\n"
-            f"Service: {service_name}\n"
-            f"Date: {booking.booking_date}\n"
-            f"Time: {booking_time_str} (Eth: {eth_time})\n"
-            f"Status: {status_text}\n"
-            f"Deposit: {booking.deposit_amount} Birr\n"
-            f"Remaining: {booking.remaining_amount} Birr\n"
-        )
+        service_name = "N/A"
+
+    text = customer_booking_details(booking, service_name, lang)
 
     keyboard = booking_detail_keyboard(booking.booking_id, booking.status, lang)
 
@@ -578,13 +525,29 @@ async def reschedule_start(callback: CallbackQuery, state: FSMContext):
     booking_id = int(callback.data.split("_")[1])
 
     async with async_session() as session:
-        user_result = await session.execute(
-            select(User).where(User.user_id == callback.from_user.id)
+        result = await session.execute(
+            select(Booking, User, Service)
+            .join(User, Booking.user_id == User.user_id)
+            .join(Service, Booking.service_id == Service.service_id)
+            .where(
+                Booking.booking_id == booking_id,
+                Booking.user_id == callback.from_user.id,
+                Booking.status.in_(['pending_payment', 'pending_verification', 'confirmed'])
+            )
         )
-        user = user_result.scalar_one_or_none()
+        row = result.one_or_none()
 
+    if not row:
+        await callback.answer("Booking not found", show_alert=True)
+        return
+
+    booking, user, service = row
     lang = user.language if user else 'en'
-    await state.update_data(reschedule_booking_id=booking_id, language=lang)
+    await state.update_data(
+        reschedule_booking_id=booking_id,
+        service_duration=service.duration,
+        language=lang,
+    )
 
     max_days = await get_int_setting("MAX_BOOKING_DAYS", settings.MAX_BOOKING_DAYS)
 
@@ -638,7 +601,10 @@ async def reschedule_select_date(callback: CallbackQuery, state: FSMContext):
     closing = day_schedule.closing_time.strftime("%H:%M")
     slot_duration = day_schedule.slot_duration or 60
 
-    booked_intervals = await get_booked_intervals(selected_date)
+    booked_intervals = await get_booked_intervals(
+        selected_date,
+        exclude_booking_id=data.get('reschedule_booking_id'),
+    )
     all_slots = generate_time_slots(opening, closing, slot_duration)
 
     if day_schedule.lunch_start and day_schedule.lunch_end:
@@ -671,12 +637,13 @@ async def reschedule_select_date(callback: CallbackQuery, state: FSMContext):
         row = []
         for t in available_slots:
             if lang == LANG_AMHARIC:
-                eth_time = to_ethiopian_time(t)
-                label = f"{t} ({eth_time})"
+                label_12h = to_12h_str(t)
+                eth_time = to_ethiopian_display(t)
+                label = f"{label_12h}  ({eth_time})"
             else:
-                label = t
+                label = to_12h_str(t)
             row.append(InlineKeyboardButton(text=label, callback_data=f"newtime_{t}"))
-            if len(row) == 2:
+            if len(row) == 1:
                 builder.row(*row)
                 row = []
         if row:
@@ -685,9 +652,9 @@ async def reschedule_select_date(callback: CallbackQuery, state: FSMContext):
         if lang == 'am':
             date_obj = date.fromisoformat(selected_date)
             date_am = format_date_am(date_obj)
-            text = f"🕐 {date_am}\nአዲስ ሰዓት ይምረጡ\n(ዓለም አቀፍ | ኢትዮጵያ)"
+            text = f"Change appointment\n{date_am}\nአዲስ ሰዓት ይምረጡ\n(12 ሰዓት | የኢትዮጵያ ሰዓት)"
         else:
-            text = f"🕒 New date: {selected_date}\nSelect a new time"
+            text = f"Change appointment\nNew date: {selected_date}\nPick a new time"
 
     back_text = "Back" if lang == 'en' else "ተመለስ"
     builder.row(InlineKeyboardButton(text=back_text, callback_data=f"reschedule_{data.get('reschedule_booking_id')}"))
@@ -708,28 +675,36 @@ async def reschedule_confirm(callback: CallbackQuery, state: FSMContext):
     try:
         async with async_session() as session:
             result = await session.execute(
-                select(Booking).where(Booking.booking_id == booking_id)
+                select(Booking).where(
+                    Booking.booking_id == booking_id,
+                    Booking.user_id == callback.from_user.id,
+                    Booking.status.in_(['pending_payment', 'pending_verification', 'confirmed'])
+                )
             )
             booking = result.scalar_one_or_none()
 
-            if booking:
-                booking.booking_date = date.fromisoformat(new_date)
-                booking.booking_time = datetime.strptime(new_time, "%H:%M").time()
-                await session.commit()
+            if not booking:
+                await callback.answer("Booking not found", show_alert=True)
+                return
+
+            booking.booking_date = date.fromisoformat(new_date)
+            booking.booking_time = datetime.strptime(new_time, "%H:%M").time()
+            await session.commit()
 
         if lang == 'am':
             new_date_obj = date.fromisoformat(new_date)
-            eth_time = to_ethiopian_time(new_time)
+            eth_time = to_ethiopian_display(new_time)
             eth_date = format_ethiopian_date(new_date_obj)
-            
+
             text = (
-                f"✅ === ቀጠሮ ተቀይሯል! ===\n\n"
-                f"📅 አዲስ ቀን: {eth_date}\n"
-                f"🕐 አዲስ ሰዓት: {eth_time}\n"
-                f"   (ዓለም አቀፍ: {new_time})"
+                f"ቀጠሮ ተቀይሯል\n\n"
+                f"አዲስ ቀን: {eth_date}\n"
+                f"አዲስ ሰዓት: {eth_time}"
             )
         else:
-            text = f"✅ === Rescheduled! ===\n\n📅 New date: {new_date}\n🕒 New time: {new_time}"
+            time_12h = to_12h_str(new_time)
+            eth_time = to_ethiopian_display(new_time)
+            text = f"Appointment changed\n\nNew date: {new_date}\nNew time: {time_12h} (Eth: {eth_time})"
 
         await callback.message.edit_text(text, reply_markup=main_menu_keyboard(lang))
 

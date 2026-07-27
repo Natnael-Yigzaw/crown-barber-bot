@@ -223,23 +223,30 @@ async def about_shop(callback: CallbackQuery):
     closing = await get_setting("CLOSING_TIME", settings.CLOSING_TIME)
 
     if lang == 'am':
-        opening_eth = to_ethiopian_time(opening)
-        closing_eth = to_ethiopian_time(closing)
+        from bot.utils.time_format import to_12h_str, to_ethiopian_display
+        opening_12h = to_12h_str(opening)
+        closing_12h = to_12h_str(closing)
+        opening_eth = to_ethiopian_display(opening)
+        closing_eth = to_ethiopian_display(closing)
         
         text = (
             f"✨ {shop_name}\n\n"
             f"📍 አድራሻ: {shop_address}\n"
             f"📞 ስልክ: {shop_phone}\n"
-            f"🕐 የስራ ሰዓት: {opening_eth} - {closing_eth}\n"
+            f"🕐 የስራ ሰዓት: {opening_12h} - {closing_12h}\n"
+            f"   (የኢትዮጵያ: {opening_eth} - {closing_eth})\n"
             f"📅 እሁድ: እረፍት\n\n"
             f"እንኳን በደህና መጡ!"
         )
     else:
+        from bot.utils.time_format import to_12h_str
+        opening_12h = to_12h_str(opening)
+        closing_12h = to_12h_str(closing)
         text = (
             f"✨ {shop_name}\n\n"
             f"📍 Address: {shop_address}\n"
             f"📞 Phone: {shop_phone}\n"
-            f"🕐 Hours: {opening} - {closing}\n"
+            f"🕐 Hours: {opening_12h} - {closing_12h}\n"
             f"📅 Sunday: Closed\n\n"
             f"Welcome!"
         )

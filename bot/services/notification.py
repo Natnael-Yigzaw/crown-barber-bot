@@ -8,6 +8,7 @@ from bot.services.settings import get_setting
 from bot.models.booking import Booking
 from bot.models.user import User
 from bot.utils.ethiopian_time import to_ethiopian_time
+from bot.utils.time_format import to_12h_str
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +63,8 @@ async def check_and_send_reminders(bot):
 
         if 115 <= minutes_until <= 125:
             if user.language == 'am':
-                eth_time = to_ethiopian_time(booking_time)
+                from bot.utils.time_format import to_ethiopian_display
+                eth_time = to_ethiopian_display(booking_time)
                 text = (
                     f"⏰ ማሳሰቢያ\n\n"
                     f"ውድ {user.full_name},\n\n"
@@ -73,11 +75,14 @@ async def check_and_send_reminders(bot):
                     f"በሰዓቱ እንጠብቅዎታለን!"
                 )
             else:
+                from bot.utils.time_format import to_12h_str, to_ethiopian_display
+                time_12h = to_12h_str(booking_time)
+                eth_time = to_ethiopian_display(booking_time)
                 text = (
                     f"⏰ Reminder\n\n"
                     f"Dear {user.full_name},\n\n"
                     f"You have an appointment in 2 hours!\n"
-                    f"Time: {booking_time}\n\n"
+                    f"Time: {time_12h} (Eth: {eth_time})\n\n"
                     f"📍 {shop_address}\n"
                     f"📞 {shop_phone}\n\n"
                     f"Please arrive on time!"
@@ -100,11 +105,14 @@ async def check_and_send_reminders(bot):
                     f"አሁኑኑ ይጓዙ!"
                 )
             else:
+                from bot.utils.time_format import to_12h_str, to_ethiopian_display
+                time_12h = to_12h_str(booking_time)
+                eth_time = to_ethiopian_display(booking_time)
                 text = (
                     f"🚶 Time to Head Over!\n\n"
                     f"{user.full_name},\n"
                     f"Your appointment is in 30 minutes!\n"
-                    f"Time: {booking_time}\n\n"
+                    f"Time: {time_12h} (Eth: {eth_time})\n\n"
                     f"Time to make your way to the shop!"
                 )
 
