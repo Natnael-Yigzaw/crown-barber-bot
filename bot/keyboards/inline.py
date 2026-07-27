@@ -82,6 +82,7 @@ def admin_menu_keyboard():
     builder.row(InlineKeyboardButton(text="💈 Services", callback_data="admin_services"))
     builder.row(InlineKeyboardButton(text="🕐 Schedule", callback_data="admin_schedule"))
     builder.row(InlineKeyboardButton(text="📸 Payment review", callback_data="admin_pending"))
+    builder.row(InlineKeyboardButton(text="⭐ Ratings", callback_data="admin_ratings"))
     builder.row(InlineKeyboardButton(text="⚙️ Settings", callback_data="admin_settings"))
     return builder.as_markup()
 

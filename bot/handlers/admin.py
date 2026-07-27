@@ -16,6 +16,7 @@ from bot.models.user import User
 from bot.models.booking import Booking
 from bot.models.payment import Payment
 from bot.models.service import Service
+from bot.models.rating import Rating
 from bot.utils.messages import admin_booking_line, admin_payment_review
 
 router = Router()
@@ -264,10 +265,134 @@ async def show_today_bookings(callback: CallbackQuery):
 
     if not bookings:
         text = "No bookings for today."
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="« Back", callback_data="admin_menu")]
+        ])
+        await callback.message.edit_text(text, reply_markup=keyboard)
+        await callback.answer()
+        return
+
+    text = f"Today ({today})\n\n"
+    for booking, user, service in bookings:
+        text += f"{admin_booking_line(booking, user, service)}\n"
+
+    # Add complete buttons for confirmed bookings
+    keyboard_buttons = []
+    for booking, user, service in bookings:
+        if booking.status == 'confirmed':
+            keyboard_buttons.append([
+                InlineKeyboardButton(
+                    text=f"✅ Complete: {user.full_name} ({booking.booking_time.strftime('%H:%M')})",
+                    callback_data=f"complete_{booking.booking_id}"
+                )
+            ])
+
+    keyboard_buttons.append([InlineKeyboardButton(text="« Back", callback_data="admin_menu")])
+    keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
+
+    await callback.message.edit_text(text, reply_markup=keyboard)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("complete_"))
+async def complete_booking(callback: CallbackQuery):
+    """Mark booking as completed and ask customer for rating"""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Unauthorized", show_alert=True)
+        return
+
+    booking_id = int(callback.data.split("_")[1])
+
+    async with async_session() as session:
+        result = await session.execute(
+            select(Booking).where(Booking.booking_id == booking_id)
+        )
+        booking = result.scalar_one_or_none()
+
+        if booking and booking.status == 'confirmed':
+            booking.status = 'completed'
+            await session.commit()
+
+            # Get user and service info
+            user_result = await session.execute(
+                select(User).where(User.user_id == booking.user_id)
+            )
+            user = user_result.scalar_one_or_none()
+
+            service_result = await session.execute(
+                select(Service).where(Service.service_id == booking.service_id)
+            )
+            service = service_result.scalar_one_or_none()
+            service_name = service.name_am if (user and user.language == 'am') else (service.name_en if service else "N/A")
+
+            if user:
+                if user.language == 'am':
+                    text = (
+                        f"✨ አገልግሎቱን እንደወደዱት ተስፋ እናደርጋለን!\n\n"
+                        f"💈 {service_name}\n"
+                        f"📅 {booking.booking_date}\n\n"
+                        f"እባክዎ ያገኙትን አገልግሎት ይገምግሙ:"
+                    )
+                else:
+                    text = (
+                        f"✨ We hope you enjoyed your service!\n\n"
+                        f"💈 {service_name}\n"
+                        f"📅 {booking.booking_date}\n\n"
+                        f"Please rate your experience:"
+                    )
+
+                try:
+                    from bot.handlers.rating import rating_keyboard
+                    await callback.bot.send_message(
+                        chat_id=booking.user_id,
+                        text=text,
+                        reply_markup=rating_keyboard(booking_id)
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to send rating request: {e}")
+
+    await callback.answer("Marked as completed!")
+    await callback.message.reply(f"Booking #{booking_id} completed. Rating request sent to customer.")
+
+    # Refresh today's bookings
+    await show_today_bookings(callback)
+
+@router.callback_query(F.data == "admin_ratings")
+async def show_ratings(callback: CallbackQuery):
+    """Show recent customer ratings"""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Unauthorized", show_alert=True)
+        return
+
+    from bot.models.rating import Rating
+
+    async with async_session() as session:
+        result = await session.execute(
+            select(Rating, User, Booking, Service)
+            .join(User, Rating.user_id == User.user_id)
+            .join(Booking, Rating.booking_id == Booking.booking_id)
+            .join(Service, Booking.service_id == Service.service_id)
+            .order_by(Rating.created_at.desc())
+            .limit(20)
+        )
+        ratings = result.all()
+
+    if not ratings:
+        text = "No ratings yet."
     else:
-        text = f"Today ({today})\n\n"
-        for booking, user, service in bookings:
-            text += f"{admin_booking_line(booking, user, service)}\n"
+        text = f"Recent Ratings ({len(ratings)})\n\n"
+        for rating, user, booking, service in ratings:
+            stars = "⭐" * rating.rating
+            service_name = service.name_en if service else "N/A"
+            text += (
+                f"{stars}\n"
+                f"Customer: {user.full_name}\n"
+                f"Service: {service_name}\n"
+                f"Date: {booking.booking_date}\n"
+            )
+            if rating.review:
+                text += f"Review: {rating.review}\n"
+            text += f"---\n"
 
     await callback.message.edit_text(text, reply_markup=admin_back_keyboard())
     await callback.answer()
@@ -322,7 +447,16 @@ async def show_all_bookings(callback: CallbackQuery):
     else:
         text = "Recent bookings\n\n"
         for booking, user, service in bookings:
-            text += f"{booking.booking_date} | {admin_booking_line(booking, user, service)}\n"
+            line = f"{booking.booking_date} | {admin_booking_line(booking, user, service)}"
+            
+            rating_result = await session.execute(
+                select(Rating).where(Rating.booking_id == booking.booking_id)
+            )
+            rating = rating_result.scalar_one_or_none()
+            if rating:
+                line += f" | Rated: {'⭐' * rating.rating}"
+            
+            text += line + "\n"
 
     await callback.message.edit_text(text, reply_markup=admin_back_keyboard())
     await callback.answer()

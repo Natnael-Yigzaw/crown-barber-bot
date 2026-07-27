@@ -19,6 +19,7 @@ from bot.handlers.start import router as start_router
 from bot.handlers.booking import router as booking_router
 from bot.handlers.payment import router as payment_router
 from bot.handlers.admin import router as admin_router
+from bot.handlers.rating import router as rating_router
 
 logging.basicConfig(
     level=logging.INFO,
@@ -82,6 +83,7 @@ async def main():
     dp.include_router(booking_router)
     dp.include_router(payment_router)
     dp.include_router(admin_router)
+    dp.include_router(rating_router)
     
     scheduler = AsyncIOScheduler()
     

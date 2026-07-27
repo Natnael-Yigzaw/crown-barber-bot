@@ -15,6 +15,7 @@ from bot.services.working_hours import get_day_schedule
 from bot.models.user import User
 from bot.models.service import Service
 from bot.models.booking import Booking
+from bot.models.rating import Rating
 from bot.utils.ethiopian_time import format_date_am, format_ethiopian_date
 from bot.utils.time_format import to_12h_str, to_ethiopian_display
 from bot.utils.messages import (
@@ -513,6 +514,23 @@ async def view_booking(callback: CallbackQuery):
         service_name = "N/A"
 
     text = customer_booking_details(booking, service_name, lang)
+
+    async with async_session() as session:
+        rating_result = await session.execute(
+            select(Rating).where(Rating.booking_id == booking_id)
+        )
+        existing_rating = rating_result.scalar_one_or_none()
+
+    if existing_rating:
+        stars = "⭐" * existing_rating.rating
+        if lang == 'am':
+            text += f"\n\n⭐ ደረጃ: {stars}"
+            if existing_rating.review:
+                text += f"\n💬 አስተያየት: {existing_rating.review}"
+        else:
+            text += f"\n\n⭐ Rating: {stars}"
+            if existing_rating.review:
+                text += f"\n💬 Review: {existing_rating.review}"
 
     keyboard = booking_detail_keyboard(booking.booking_id, booking.status, lang)
 
